@@ -8,6 +8,7 @@
  * Copyright (C) 2003, 2004, 2005, 2006, 2007, 2008 Apple Inc. All rights reserved.
  * Copyright (C) 2008 Nokia Corporation and/or its subsidiary(-ies).
  * Copyright (C) 2008 Dirk Schulze <vbs85@gmx.de>
+ * Copyright (C) 2013 Digia Plc. and/or its subsidiary(-ies).
  *
  * All rights reserved.
  *
@@ -36,19 +37,57 @@
 #ifndef TransparencyLayer_h
 #define TransparencyLayer_h
 
+#include <wtf/Noncopyable.h>
+
 #include <QPaintEngine>
 #include <QPainter>
 #include <QPixmap>
+#include <QPicture>
 
 namespace WebCore {
 
 struct TransparencyLayer {
-    WTF_MAKE_FAST_ALLOCATED;
-public:
-    TransparencyLayer(const QPainter* p, const QRect &rect, qreal opacity, QPixmap& alphaMask)
+    TransparencyLayer()
+        : saveCounter(1) // see the comment for saveCounter
+    { }
+    virtual ~TransparencyLayer() { }
+    virtual void finalizeLayer(QPainter *p) = 0;
+    virtual bool isAlphaMaskLayer() const = 0;
+
+    QPainter painter;
+    // saveCounter is only used in combination with alphaMask
+    // otherwise, its value is unspecified
+    int saveCounter;
+
+    WTF_MAKE_NONCOPYABLE(TransparencyLayer);
+};
+
+struct OpacityLayer : public TransparencyLayer {
+    OpacityLayer(qreal opacity)
         : opacity(opacity)
-        , alphaMask(alphaMask)
-        , saveCounter(1) // see the comment for saveCounter
+    {
+        painter.begin(&paintBuffer);
+    }
+
+    virtual bool isAlphaMaskLayer() const { return false; }
+
+    virtual void finalizeLayer(QPainter* p)
+    {
+        painter.end();
+        qreal oldOpacity = p->opacity();
+        p->setOpacity(opacity * oldOpacity);
+        p->drawPicture(0, 0, paintBuffer);
+        p->setOpacity(oldOpacity);
+    }
+
+private:
+    QPicture paintBuffer;
+    qreal opacity;
+};
+
+struct AlphaMaskLayer : public TransparencyLayer {
+    AlphaMaskLayer(const QPainter* p, const QRect& rect, QPixmap& alphaMask)
+        : alphaMask(alphaMask)
     {
         int devicePixelRatio = p->device()->devicePixelRatio();
         pixmap = QPixmap(rect.width() * devicePixelRatio, rect.height() * devicePixelRatio);
@@ -62,25 +101,26 @@ public:
         painter.setBrush(p->brush());
         painter.setTransform(p->transform(), true);
         painter.setFont(p->font());
-        painter.setOpacity(1);
     }
 
-    TransparencyLayer()
+    virtual bool isAlphaMaskLayer() const { return true; }
+
+    virtual void finalizeLayer(QPainter* p)
     {
+        painter.resetTransform();
+        painter.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+        painter.drawPixmap(QPoint(), alphaMask);
+        painter.end();
+        p->save();
+        p->resetTransform();
+        p->drawPixmap(offset, pixmap);
+        p->restore();
     }
 
+private:
     QPixmap pixmap;
     QPoint offset;
-    QPainter painter;
-    qreal opacity;
-    // for clipToImageBuffer
     QPixmap alphaMask;
-    // saveCounter is only used in combination with alphaMask
-    // otherwise, its value is unspecified
-    int saveCounter;
-private:
-    TransparencyLayer(const TransparencyLayer &) {}
-    TransparencyLayer & operator=(const TransparencyLayer &) { return *this; }
 };
 
 } // namespace WebCore
