@@ -386,14 +386,14 @@ AffineTransform GraphicsContext::getCTM(IncludeDeviceScale includeScale) const
 
 void GraphicsContext::savePlatformState()
 {
-    if (!m_data->layers.isEmpty() && !m_data->layers.top()->alphaMask.isNull())
+    if (!m_data->layers.isEmpty() && m_data->layers.top()->isAlphaMaskLayer())
         ++m_data->layers.top()->saveCounter;
     m_data->p()->save();
 }
 
 void GraphicsContext::restorePlatformState()
 {
-    if (!m_data->layers.isEmpty() && !m_data->layers.top()->alphaMask.isNull())
+    if (!m_data->layers.isEmpty() && m_data->layers.top()->isAlphaMaskLayer())
         if (!--m_data->layers.top()->saveCounter)
             popTransparencyLayerInternal();
 
@@ -1250,7 +1250,7 @@ void GraphicsContext::pushTransparencyLayerInternal(const QRect &rect, qreal opa
     if (alphaMask.width() != deviceClip.width() || alphaMask.height() != deviceClip.height())
         alphaMask = alphaMask.scaled(deviceClip.width(), deviceClip.height());
 
-    m_data->layers.push(new TransparencyLayer(p, deviceClip, 1.0, alphaMask));
+    m_data->layers.push(new AlphaMaskLayer(p, deviceClip, alphaMask));
 }
 
 void GraphicsContext::beginPlatformTransparencyLayer(float opacity)
@@ -1258,43 +1258,18 @@ void GraphicsContext::beginPlatformTransparencyLayer(float opacity)
     if (paintingDisabled())
         return;
 
-    int x, y, w, h;
-    x = y = 0;
-    QPainter* p = m_data->p();
-    const QPaintDevice* device = p->device();
-    w = device->width();
-    h = device->height();
-
-    if (p->hasClipping()) {
-        QRectF clip = m_data->clipBoundingRect();
-        QRectF deviceClip = p->transform().mapRect(clip);
-        x = int(qBound(qreal(0), deviceClip.x(), (qreal)w));
-        y = int(qBound(qreal(0), deviceClip.y(), (qreal)h));
-        w = int(qBound(qreal(0), deviceClip.width(), (qreal)w) + 2);
-        h = int(qBound(qreal(0), deviceClip.height(), (qreal)h) + 2);
-    }
-
-    QPixmap emptyAlphaMask;
-    m_data->layers.push(new TransparencyLayer(p, QRect(x, y, w, h), opacity, emptyAlphaMask));
+    m_data->layers.push(new OpacityLayer(opacity));
     ++m_data->layerCount;
 }
 
 void GraphicsContext::popTransparencyLayerInternal()
 {
     TransparencyLayer* layer = m_data->layers.pop();
-    ASSERT(!layer->alphaMask.isNull());
+    ASSERT(layer->isAlphaMaskLayer());
     ASSERT(layer->saveCounter == 0);
-    layer->painter.resetTransform();
-    layer->painter.setCompositionMode(QPainter::CompositionMode_DestinationIn);
-    layer->painter.drawPixmap(QPoint(), layer->alphaMask);
-    layer->painter.end();
 
     QPainter* p = m_data->p();
-    p->save();
-    p->resetTransform();
-    p->setOpacity(layer->opacity);
-    p->drawPixmap(layer->offset, layer->pixmap);
-    p->restore();
+    layer->finalizeLayer(p);
 
     delete layer;
 }
@@ -1304,20 +1279,15 @@ void GraphicsContext::endPlatformTransparencyLayer()
     if (paintingDisabled())
         return;
 
-    while ( ! m_data->layers.top()->alphaMask.isNull() ){
+    while ( m_data->layers.top()->isAlphaMaskLayer() ){
         --m_data->layers.top()->saveCounter;
         popTransparencyLayerInternal();
     }
     TransparencyLayer* layer = m_data->layers.pop();
     --m_data->layerCount; // see the comment for layerCount
-    layer->painter.end();
 
     QPainter* p = m_data->p();
-    p->save();
-    p->resetTransform();
-    p->setOpacity(layer->opacity);
-    p->drawPixmap(layer->offset, layer->pixmap);
-    p->restore();
+    layer->finalizeLayer(p);
 
     delete layer;
 }
